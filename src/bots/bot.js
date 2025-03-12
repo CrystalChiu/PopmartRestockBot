@@ -1,7 +1,7 @@
 const {Client, GatewayIntentBits} = require("discord.js");
-const {checkStock} = require("./scraper");
-const {connectDB} = require("./database");
-const {CHECK_INTERVAL, CHANNEL_ID} = require("./config");
+const {checkStock} = require("../scrapers/scraper");
+const {connectDB} = require("../database/database");
+const {CHECK_INTERVAL, CHANNEL_ID} = require("../config/config");
 require("dotenv").config();
 
 const client = new Client({

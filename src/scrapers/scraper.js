@@ -1,6 +1,6 @@
 const axios = require("axios");
 const cheerio = require("cheerio"); // for handling page html
-const {SEED_URL, EXCLUDED_PRODUCTS} = require("./config");
+const {SEED_URL, EXCLUDED_PRODUCTS} = require("../config/config");
 
 async function checkStock() {
   try {
