@@ -1,5 +1,5 @@
 const {Client, GatewayIntentBits} = require("discord.js");
-const {checkStock} = require("../scrapers/scraper");
+const {initScraper} = require("../scrapers/scraper");
 const {connectDB} = require("../database/database");
 const {CHECK_INTERVAL, CHANNEL_ID} = require("../config/config");
 require("dotenv").config();
@@ -11,12 +11,9 @@ const client = new Client({
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}!`);
   connectDB();
-  monitorStock();
+  const outOfStockProducts = []; // TODO: query for all products in Products where in_stock = false
+  initScraper(outOfStockProducts);
 });
-
-async function monitorStock() {
-  console.log("monitoring stock...")
-}
 
 async function sendRestockAlert(itemName, itemDetails) {
   // connect to channel
