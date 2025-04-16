@@ -1,15 +1,15 @@
-const axios = require("axios");
-const cheerio = require("cheerio"); // for handling page html
-const {BASE_URL} = require("../config/config");
-const Product = require("../database/models/Products"); 
+const puppeteer = require("puppeteer");
+const cheerio = require("cheerio");
+const { BASE_URL } = require("../config/config");
+const Product = require("../database/models/Products");
 
 let restockedProducts = [];
-let currentPage = 1;
+let currentPage = 7;
 
 class Frontier {
   constructor() {
-    this.queue = []; // hold links to visit
-    this.seen = new Set(); // hold visited links
+    this.queue = [];
+    this.seen = new Set();
   }
 
   add(url) {
@@ -20,25 +20,35 @@ class Frontier {
   }
 
   next() {
-      // will for now be the link attached to next page button
-      return(this.queue.shift());
+    return this.queue.shift();
   }
 
-  hasPending() {
-    return this.queue.size > 0;
+  isEmpty() {
+    return this.queue.length === 0;
   }
 }
 
-async function scrapePage(url, allProductsMap) {
-  console.log("Scraping url: ", url);
+const getRenderedHTML = async (url) => {
+  const browser = await puppeteer.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "networkidle0", timeout: 60000 });
+
+  const html = await page.content();
+  await browser.close();
+  return html;
+};
+
+async function scrapePage(url, allProductsMap, frontier) {
+  console.log("<DEBUG> Scraping url:", url);
 
   try {
-    const { data } = await axios.get(url);
-    const $ = cheerio.load(data);
+    const html = await getRenderedHTML(url);
+    const $ = cheerio.load(html);
 
     await checkStock($, allProductsMap);
 
     const hasNextPage = $(".ant-pagination-next").attr("aria-disabled") !== "true";
+    console.log("<DEBUG> Next button data: ", hasNextPage);
     if (hasNextPage) {
       currentPage++;
       const nextUrl = `${BASE_URL}${currentPage}`;
@@ -50,68 +60,67 @@ async function scrapePage(url, allProductsMap) {
 }
 
 const checkStock = async ($, allProductsMap) => {
+  console.log("<DEBUG> checking stock...");
+
   $(".index_infoBlock__IG8h0 > div").each(async (index, element) => {
     const productElement = $(element);
     const name = productElement.find(".index_itemUsTitle__7oLxa").text().trim();
-    const price = productElement.find(".index_itemPrice__AQoMy").text().trim();
+    const rawPrice = productElement.find(".index_itemPrice__AQoMy").text().trim();
+    const price = parseFloat(rawPrice.replace(/[^0-9.]/g, ""));
     const relativeUrl = productElement.find("a").attr("href");
     const productUrl = relativeUrl ? new URL(relativeUrl, BASE_URL).href : "";
     const imgElement = productElement.find(".index_itemImg__1J3x5 img");
     const imgUrl = imgElement.attr("src") || imgElement.attr("data-src");
-
-    console.log(name);
-    console.log(productUrl);
-    console.log(imgUrl);
 
     const isOutOfStock = productElement.find(".index_tag__5TOhQ").text().includes("OUT OF STOCK");
     const inStock = !isOutOfStock;
 
     let product = allProductsMap[name];
 
+    // Persist database changes based on scraped data
     if (!product) {
-      console.log("DEBUG: added new product", product);
-      // product doesnt exit, update db with new record
+      // Adding new product to table
       product = new Product({
         name,
         price,
-        img: imgUrl,
+        in_stock: inStock,
         url: productUrl,
-        inStock,
+        img_url: imgUrl,
       });
+      console.log("<DEBUG> Added new product:", name);
     } else {
-      if (!product.inStock && inStock) {
-        restockedProducts.add(product);
+      // Restock detected
+      if (!product.in_stock && inStock) {
+        restockedProducts.push(product);
       }
-      product.inStock = inStock;
+      product.in_stock = inStock;
     }
+    // TODO: check for information updates in all other fields as well if needed (price changes, url, etc)
+    // Might be costly, we should do this more sparingly unless we can optimize it
 
     await product.save();
+    console.log("Saved:", name);
   });
 };
 
 async function runScraper() {
   console.log("Scraper running...");
-  
-  // init frontier
+
   const frontier = new Frontier();
-  console.log(`${BASE_URL}${currentPage}`);
-  frontier.add(`${BASE_URL}${currentPage}`); // seed URL
+  frontier.add(`${BASE_URL}${currentPage}`);
 
   const allProducts = await Product.find();
   const allProductsMap = allProducts.reduce((acc, product) => {
-    acc[product.name] = product;  // map product name to product object
+    acc[product.name] = product;
     return acc;
   }, {});
 
-  while (frontier.hasPending()) {
-    const nextUrl = frontier.next();
-    console.log(nextUrl);
-    if(nextUrl) 
-      await scrapePage(nextUrl, allProductsMap);
+  while (!frontier.isEmpty()) {
+    const url = frontier.next();
+    if (url) await scrapePage(url, allProductsMap, frontier);
   }
 
   return restockedProducts;
 }
 
 module.exports = { runScraper };
-
