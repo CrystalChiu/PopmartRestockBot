@@ -1,55 +1,126 @@
-const puppeteer = require("puppeteer");
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cheerio = require("cheerio");
 const { BASE_URL } = require("../config/config");
 const Product = require("../database/models/Products");
+const Frontier = require('./Frontier');
 
-let restockedProducts = [];
-let currentPage = 7;
+// ENUM for changes that create an alert
+const ChangeTypeAlert = Object.freeze({
+  RESTOCK: 0,
+  NEW_ITEM: 1,
+});
 
-class Frontier {
-  constructor() {
-    this.queue = [];
-    this.seen = new Set();
-  }
+let alertProducts = []; // Stores pairs of product, changeTypes that will become alerts
+let browser, page; // Reuse browser and page for scraping
+let currentPage = 1;
 
-  add(url) {
-    if (!this.seen.has(url)) {
-      this.queue.push(url);
-      this.seen.add(url);
+puppeteer.use(StealthPlugin());
+
+const buildBulkOps = (products) => {
+  return products.map((product) => ({
+    updateOne: {
+      filter: { name: product.name },
+      update: {
+        $set: {
+          price: product.price,
+          url: product.url,
+          img_url: product.img_url,
+          in_stock: product.in_stock,
+        },
+      },
+      upsert: true,
+    },
+  }));
+};
+
+async function runScraper() {
+  console.log("Scraper running...");
+
+  browser = await puppeteer.launch({
+    headless: true,
+  });
+  page = await browser.newPage();
+  await page.setRequestInterception(true);
+  page.on('request', (req) => {
+    const type = req.resourceType();
+    if (['stylesheet', 'font'].includes(type)) {
+      req.abort();
+    } else {
+      req.continue();
     }
+  });
+  
+  const frontier = new Frontier();
+  frontier.add(`${BASE_URL}${currentPage}`);
+
+  const changedProducts = [];
+  const allProducts = await Product.find();
+  const allProductsMap = allProducts.reduce((acc, product) => {
+    acc[product.name] = product;
+    return acc;
+  }, {});
+
+  // reset scraper state
+  alertProducts.length = 0;
+  currentPage = 1;
+
+  while (!frontier.isEmpty()) {
+    const url = frontier.next();
+    if (url) await scrapePage(url, allProductsMap, frontier, changedProducts, page);
   }
 
-  next() {
-    return this.queue.shift();
+  await browser.close();
+
+  // Bulk write for any DB changes with products
+  if (changedProducts.length > 0) {
+    const bulkOps = buildBulkOps(changedProducts);
+    const result = await Product.bulkWrite(bulkOps);
+    console.log("Bulk write result:", result);
   }
 
-  isEmpty() {
-    return this.queue.length === 0;
-  }
+  console.log("RETURNING");
+  return alertProducts;
 }
 
 const getRenderedHTML = async (url) => {
-  const browser = await puppeteer.launch({ headless: true });
-  const page = await browser.newPage();
-  await page.goto(url, { waitUntil: "networkidle0", timeout: 60000 });
+  await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-  const html = await page.content();
-  await browser.close();
-  return html;
+   // Attempt to accept privacy banner if it appears
+  try {
+    await page.waitForSelector('.policy_acceptBtn__ZNU71', { timeout: 2000 });
+    await page.evaluate(() => {
+      const acceptDiv = document.querySelector('.policy_acceptBtn__ZNU71');
+      if (acceptDiv) acceptDiv.click();
+    });
+    console.log("✅ Accepted privacy banner.");
+  } catch (e) {
+    console.log("ℹ️ No privacy banner or already accepted.");
+  }
+
+  return await page.content();
 };
 
-async function scrapePage(url, allProductsMap, frontier) {
+async function isLastPage(page) {
+  const nextLi = await page.$('li[title="Next Page"]');
+  if (!nextLi) return true; // If the button doesn't exist, assume last page
+
+  const className = await page.evaluate(el => el.getAttribute('class'), nextLi);
+  return className.includes('disabled');
+}
+
+async function scrapePage(url, allProductsMap, frontier, changedProducts, page) {
   console.log("<DEBUG> Scraping url:", url);
 
   try {
-    const html = await getRenderedHTML(url);
+    const html = await getRenderedHTML(url, page);
     const $ = cheerio.load(html);
 
-    await checkStock($, allProductsMap);
+    await checkStock($, allProductsMap, changedProducts);
 
-    const hasNextPage = $(".ant-pagination-next").attr("aria-disabled") !== "true";
-    console.log("<DEBUG> Next button data: ", hasNextPage);
-    if (hasNextPage) {
+    //TODO: fix this bug to properly detect last page 
+    const isLast = await isLastPage(page);
+    if (!isLast) {
       currentPage++;
       const nextUrl = `${BASE_URL}${currentPage}`;
       frontier.add(nextUrl);
@@ -59,10 +130,13 @@ async function scrapePage(url, allProductsMap, frontier) {
   }
 }
 
-const checkStock = async ($, allProductsMap) => {
+const checkStock = async ($, allProductsMap, changedProducts) => {
   console.log("<DEBUG> checking stock...");
 
-  $(".index_infoBlock__IG8h0 > div").each(async (index, element) => {
+  const elements = $(".index_infoBlock__IG8h0 > div");
+  for (let i = 0; i < elements.length; i++) {
+    const element = elements[i];
+   
     const productElement = $(element);
     const name = productElement.find(".index_itemUsTitle__7oLxa").text().trim();
     const rawPrice = productElement.find(".index_itemPrice__AQoMy").text().trim();
@@ -77,7 +151,7 @@ const checkStock = async ($, allProductsMap) => {
 
     let product = allProductsMap[name];
 
-    // Persist database changes based on scraped data
+    // Keep track of database changes that need to be made based on scraped data
     if (!product) {
       // Adding new product to table
       product = new Product({
@@ -87,40 +161,31 @@ const checkStock = async ($, allProductsMap) => {
         url: productUrl,
         img_url: imgUrl,
       });
+
+      alertProducts.push([product, ChangeTypeAlert.NEW_ITEM])
+      changedProducts.push(product);
       console.log("<DEBUG> Added new product:", name);
     } else {
-      // Restock detected
+      // Restock detected, update stock status and keep track of restocked item
       if (!product.in_stock && inStock) {
-        restockedProducts.push(product);
+        alertProducts.push([product, ChangeTypeAlert.RESTOCK]);
+        product.in_stock = inStock;
       }
-      product.in_stock = inStock;
+
+      const updateField = (field, newValue) => {
+        if (product[field] !== newValue) {
+          product[field] = newValue;
+        }
+      };
+
+      // Handle other product detail changes
+      updateField("price", price);
+      updateField("url", productUrl);
+      updateField("img_url", imgUrl);
+
+      changedProducts.push(product);
     }
-    // TODO: check for information updates in all other fields as well if needed (price changes, url, etc)
-    // Might be costly, we should do this more sparingly unless we can optimize it
-
-    await product.save();
-    console.log("Saved:", name);
-  });
-};
-
-async function runScraper() {
-  console.log("Scraper running...");
-
-  const frontier = new Frontier();
-  frontier.add(`${BASE_URL}${currentPage}`);
-
-  const allProducts = await Product.find();
-  const allProductsMap = allProducts.reduce((acc, product) => {
-    acc[product.name] = product;
-    return acc;
-  }, {});
-
-  while (!frontier.isEmpty()) {
-    const url = frontier.next();
-    if (url) await scrapePage(url, allProductsMap, frontier);
   }
-
-  return restockedProducts;
-}
+};
 
 module.exports = { runScraper };
