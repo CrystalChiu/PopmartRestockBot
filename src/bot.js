@@ -24,27 +24,28 @@ client.once("ready", async () => {
 
   let CHANNEL_ID = mode == "test" ? TEST_CHANNEL_ID : PROD_CHANNEL_ID;
 
-  // start the infinite loop
+  // Start the infinite loop
   runScraperLoop(CHANNEL_ID);
 });
 
 async function runScraperLoop(CHANNEL_ID) {
-  const alertProducts = await runScraper(); // returns a list of [product, changeType]
-  console.log(`received ${alertProducts.length} alert products`);
+  while (true) {
+    const alertProducts = await runScraper();
+    console.log("Alerts to send:", alertProducts.length);
 
-  for (const [product, changeType] of alertProducts) {
-    await sendAlert(product, changeType, CHANNEL_ID);
+    for (const [product, changeType] of alertProducts) {
+      await sendAlert(product, changeType, CHANNEL_ID);
+    }
+
+    const jitter = Math.floor(Math.random() * MAX_JITTER_MS);
+    const nextInterval = CHECK_INTERVAL + jitter;
+    console.log(`Waiting ${nextInterval}ms before next scrape...\n`);
+
+    await new Promise(resolve => setTimeout(resolve, nextInterval));
   }
-
-  const jitter = Math.floor(Math.random() * MAX_JITTER_MS);
-  const nextInterval = CHECK_INTERVAL + jitter;
-
-  setTimeout(() => runScraperLoop(CHANNEL_ID), nextInterval); // Schedule next run
 }
 
 async function sendAlert(product, changeType, CHANNEL_ID) {
-  console.log(`sending alert for: ${product.name}`);
-
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
     if (!channel) {
@@ -62,14 +63,11 @@ async function sendAlert(product, changeType, CHANNEL_ID) {
         {
           title: product.name,
           url: product.url,
-          image: {
-            url: product.img_url, // 🔧 was `imgUrl`, which is incorrect
-          },
         },
       ],
     });
 
-    console.log("✅ Alert sent.");
+    console.log("✅ Alert sent for: ", product.name);
   } catch (err) {
     console.error("❌ Error sending alert:", err.message);
   }

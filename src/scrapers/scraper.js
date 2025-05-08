@@ -14,6 +14,7 @@ const ChangeTypeAlert = Object.freeze({
 let alertProducts = []; // Stores pairs of product, changeTypes that will become alerts
 let browser, page; // Reuse browser and page for scraping
 let currentPage = 1;
+let privacyBannerAccepted = false;
 
 puppeteer.use(StealthPlugin());
 
@@ -25,7 +26,7 @@ const buildBulkOps = (products) => {
         $set: {
           price: product.price,
           url: product.url,
-          img_url: product.img_url,
+          // img_url: product.img_url,
           in_stock: product.in_stock,
         },
       },
@@ -35,7 +36,12 @@ const buildBulkOps = (products) => {
 };
 
 async function runScraper() {
-  console.log("Scraper running...");
+  // logging animation
+  console.log("Scraper running..."); // Print once, no newline
+
+  // Reset scraper state
+  alertProducts.length = 0;
+  currentPage = 1;
 
   browser = await puppeteer.launch({
     headless: true,
@@ -44,7 +50,7 @@ async function runScraper() {
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const type = req.resourceType();
-    if (['stylesheet', 'font'].includes(type)) {
+    if (['image', 'stylesheet', 'font'].includes(type)) {
       req.abort();
     } else {
       req.continue();
@@ -52,7 +58,7 @@ async function runScraper() {
   });
   
   const frontier = new Frontier();
-  frontier.add(`${BASE_URL}${currentPage}`);
+  frontier.add(`${BASE_URL}`);
 
   const changedProducts = [];
   const allProducts = await Product.find();
@@ -60,10 +66,6 @@ async function runScraper() {
     acc[product.name] = product;
     return acc;
   }, {});
-
-  // reset scraper state
-  alertProducts.length = 0;
-  currentPage = 1;
 
   while (!frontier.isEmpty()) {
     const url = frontier.next();
@@ -79,30 +81,42 @@ async function runScraper() {
     console.log("Bulk write result:", result);
   }
 
-  console.log("RETURNING");
   return alertProducts;
 }
 
 const getRenderedHTML = async (url) => {
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
-
-   // Attempt to accept privacy banner if it appears
   try {
-    await page.waitForSelector('.policy_acceptBtn__ZNU71', { timeout: 2000 });
-    await page.evaluate(() => {
-      const acceptDiv = document.querySelector('.policy_acceptBtn__ZNU71');
-      if (acceptDiv) acceptDiv.click();
-    });
-    console.log("✅ Accepted privacy banner.");
-  } catch (e) {
-    console.log("ℹ️ No privacy banner or already accepted.");
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+  } catch (err) {
+    console.error(`❌ Error loading ${url}: ${err.message}`);
+    console.log("⏳ Waiting 30 seconds before continuing...");
+
+    await new Promise((resolve) => setTimeout(resolve, 30000));
   }
+
+  // NOTE: Let us only do this once when the bot first starts up OR only check on page 1
+  // Attempt to accept privacy banner if it appears
+  if(!privacyBannerAccepted) {
+    try {
+      await page.waitForSelector('.policy_acceptBtn__ZNU71', { timeout: 2000 });
+      await page.evaluate(() => {
+        const acceptDiv = document.querySelector('.policy_acceptBtn__ZNU71');
+        if (acceptDiv) acceptDiv.click();
+      });
+      console.log("✅ Accepted privacy banner.");
+      privacyBannerAccepted = true;
+    } catch (e) {
+      console.log("ℹ️ No privacy banner or already accepted.");
+    }
+  }
+
+  await page.waitForSelector(".index_infoBlock__IG8h0 > div", { timeout: 10000 });
 
   return await page.content();
 };
 
 async function isLastPage(page) {
-  const nextLi = await page.$('li[title="Next Page"]');
+  const nextLi = await page.$('li[title="Next Page"]', { timeout: 2000 });
   if (!nextLi) return true; // If the button doesn't exist, assume last page
 
   const className = await page.evaluate(el => el.getAttribute('class'), nextLi);
@@ -110,7 +124,7 @@ async function isLastPage(page) {
 }
 
 async function scrapePage(url, allProductsMap, frontier, changedProducts, page) {
-  console.log("<DEBUG> Scraping url:", url);
+  console.log("Scraping url:", url);
 
   try {
     const html = await getRenderedHTML(url, page);
@@ -118,11 +132,10 @@ async function scrapePage(url, allProductsMap, frontier, changedProducts, page) 
 
     await checkStock($, allProductsMap, changedProducts);
 
-    //TODO: fix this bug to properly detect last page 
     const isLast = await isLastPage(page);
     if (!isLast) {
       currentPage++;
-      const nextUrl = `${BASE_URL}${currentPage}`;
+      const nextUrl = `${BASE_URL}?page=${currentPage}`;
       frontier.add(nextUrl);
     }
   } catch (error) {
@@ -131,9 +144,10 @@ async function scrapePage(url, allProductsMap, frontier, changedProducts, page) 
 }
 
 const checkStock = async ($, allProductsMap, changedProducts) => {
-  console.log("<DEBUG> checking stock...");
+  console.log("Checking stock...");
 
   const elements = $(".index_infoBlock__IG8h0 > div");
+
   for (let i = 0; i < elements.length; i++) {
     const element = elements[i];
    
@@ -143,8 +157,8 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
     const price = parseFloat(rawPrice.replace(/[^0-9.]/g, ""));
     const relativeUrl = productElement.find("a").attr("href");
     const productUrl = relativeUrl ? new URL(relativeUrl, BASE_URL).href : "";
-    const imgElement = productElement.find(".index_itemImg__1J3x5 img");
-    const imgUrl = imgElement.attr("src") || imgElement.attr("data-src");
+    // const imgElement = productElement.find(".index_itemImg__1J3x5 img");
+    // const imgUrl = imgElement.attr("src") || imgElement.attr("data-src");
 
     const isOutOfStock = productElement.find(".index_tag__5TOhQ").text().includes("OUT OF STOCK");
     const inStock = !isOutOfStock;
@@ -159,12 +173,12 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
         price,
         in_stock: inStock,
         url: productUrl,
-        img_url: imgUrl,
+        // img_url: imgUrl,
       });
 
       alertProducts.push([product, ChangeTypeAlert.NEW_ITEM])
       changedProducts.push(product);
-      console.log("<DEBUG> Added new product:", name);
+      // console.log("<DEBUG> Added new product:", name);
     } else {
       // Restock detected, update stock status and keep track of restocked item
       if (!product.in_stock && inStock) {
@@ -181,7 +195,7 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
       // Handle other product detail changes
       updateField("price", price);
       updateField("url", productUrl);
-      updateField("img_url", imgUrl);
+      // updateField("img_url", imgUrl);
 
       changedProducts.push(product);
     }
