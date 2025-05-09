@@ -83,15 +83,11 @@ async function sendStartupStatusAlert() {
       return;
     }
 
-    const messageContent = "Prod Running on EC2 ✅ "
-
     await channel.send({
-      content: messageContent,
+      content: "Prod Running on EC2 ✅"
     });
-
-    console.log("✅ Alert sent for: ", product.name);
   } catch (err) {
-    console.error("❌ Error sending alert:", err.message);
+    console.error("❌ Error sending startup alert:", err.message);
   }
 }
 
