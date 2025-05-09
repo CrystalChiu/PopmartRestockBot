@@ -19,6 +19,8 @@ client.once("ready", async () => {
   var args = process.argv.slice(2);
   if (args.length > 0 && args[0] === "test") {
     mode = "test";
+  } else {
+    sendStartupStatusAlert();
   }
   console.log(`App running in ${mode}`);
 
@@ -65,6 +67,26 @@ async function sendAlert(product, changeType, CHANNEL_ID) {
           url: product.url,
         },
       ],
+    });
+
+    console.log("✅ Alert sent for: ", product.name);
+  } catch (err) {
+    console.error("❌ Error sending alert:", err.message);
+  }
+}
+
+async function sendStartupStatusAlert() {
+  try {
+    const channel = await client.channels.fetch(TEST_CHANNEL_ID);
+    if (!channel) {
+      console.error("❌ Channel not found!");
+      return;
+    }
+
+    const messageContent = "Prod Running on EC2 ✅ "
+
+    await channel.send({
+      content: messageContent,
     });
 
     console.log("✅ Alert sent for: ", product.name);
