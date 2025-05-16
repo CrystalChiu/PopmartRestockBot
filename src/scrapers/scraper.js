@@ -69,7 +69,22 @@ async function runScraper() {
 
   while (!frontier.isEmpty()) {
     const url = frontier.next();
-    if (url) await scrapePage(url, allProductsMap, frontier, changedProducts, page);
+    
+    if(url) {
+      try {
+        await scrapePage(url, allProductsMap, frontier, changedProducts, page);
+      } catch (err) {
+        console.warn(`⚠️ Failed first attempt for ${url}: ${err.message}`);
+        // Wait a moment before retrying
+        await new Promise(res => setTimeout(res, 3000));
+    
+        try {
+          scrapePage(url, allProductsMap, frontier, changedProducts, page); // Second try
+        } catch (err2) {
+          console.error(`❌ Failed retry for ${url}: ${err2.message}`);
+        }
+      }
+    }
   }
 
   await browser.close();
@@ -110,6 +125,7 @@ const getRenderedHTML = async (url) => {
     }
   }
 
+  // the app will die after this times out
   await page.waitForSelector(".index_infoBlock__IG8h0 > div", { timeout: 10000 });
 
   return await page.content();
