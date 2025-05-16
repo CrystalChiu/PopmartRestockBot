@@ -11,6 +11,8 @@ const ChangeTypeAlert = Object.freeze({
   NEW_ITEM: 1,
 });
 
+let ALL_PRODUCT_ELEMENTS = "div[data-pm-exposure-tracker-action=\"PopMartGlobalWebCommodityCardShow\"]";
+
 let alertProducts = []; // Stores pairs of product, changeTypes that will become alerts
 let browser, page; // Reuse browser and page for scraping
 let currentPage = 1;
@@ -40,6 +42,7 @@ async function runScraper() {
   console.log("Scraper running..."); // Print once, no newline
 
   // Reset scraper state
+  privacyBannerAccepted = false;
   alertProducts.length = 0;
   currentPage = 1;
 
@@ -126,7 +129,7 @@ const getRenderedHTML = async (url) => {
   }
 
   // the app will die after this times out
-  await page.waitForSelector(".index_infoBlock__IG8h0 > div", { timeout: 10000 });
+  await page.waitForSelector(ALL_PRODUCT_ELEMENTS, { timeout: 10000 });
 
   return await page.content();
 };
@@ -162,21 +165,22 @@ async function scrapePage(url, allProductsMap, frontier, changedProducts, page) 
 const checkStock = async ($, allProductsMap, changedProducts) => {
   console.log("Checking stock...");
 
-  const elements = $(".index_infoBlock__IG8h0 > div");
+  const elements = $(ALL_PRODUCT_ELEMENTS);
 
   for (let i = 0; i < elements.length; i++) {
-    const element = elements[i];
-   
-    const productElement = $(element);
-    const name = productElement.find(".index_itemUsTitle__7oLxa").text().trim();
-    const rawPrice = productElement.find(".index_itemPrice__AQoMy").text().trim();
+    const el = elements[i];
+    const productElement = $(el);
+
+    const name = productElement.find("h2.index_itemUsTitle__7oLxa").text().trim();
+    const rawPrice = productElement.find("div.index_itemPrice__AQoMy").text().trim();
     const price = parseFloat(rawPrice.replace(/[^0-9.]/g, ""));
+
     const relativeUrl = productElement.find("a").attr("href");
     const productUrl = relativeUrl ? new URL(relativeUrl, BASE_URL).href : "";
-    // const imgElement = productElement.find(".index_itemImg__1J3x5 img");
-    // const imgUrl = imgElement.attr("src") || imgElement.attr("data-src");
 
-    const isOutOfStock = productElement.find(".index_tag__5TOhQ").text().includes("OUT OF STOCK");
+    // const imgUrl = productElement.find("img.ant-image-img").attr("src") || "";
+
+    const isOutOfStock = productElement.find("div.index_tag__5TOhq").text().includes("OUT OF STOCK");
     const inStock = !isOutOfStock;
 
     let product = allProductsMap[name];
@@ -189,12 +193,11 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
         price,
         in_stock: inStock,
         url: productUrl,
-        // img_url: imgUrl,
       });
 
       alertProducts.push([product, ChangeTypeAlert.NEW_ITEM])
       changedProducts.push(product);
-      // console.log("<DEBUG> Added new product:", name);
+      console.log("Added new product:", name);
     } else {
       // Restock detected, update stock status and keep track of restocked item
       if (!product.in_stock && inStock) {
@@ -205,6 +208,7 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
       const updateField = (field, newValue) => {
         if (product[field] !== newValue) {
           product[field] = newValue;
+          console.log(`Updated ${field} for ${product.name}`);
         }
       };
 
