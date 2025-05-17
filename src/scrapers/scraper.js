@@ -82,7 +82,7 @@ async function runScraper() {
         await new Promise(res => setTimeout(res, 3000));
     
         try {
-          scrapePage(url, allProductsMap, frontier, changedProducts, page); // Second try
+          await scrapePage(url, allProductsMap, frontier, changedProducts, page); // Second try
         } catch (err2) {
           console.error(`❌ Failed retry for ${url}: ${err2.message}`);
         }
@@ -135,7 +135,7 @@ const getRenderedHTML = async (url) => {
 };
 
 async function isLastPage(page) {
-  const nextLi = await page.$('li[title="Next Page"]', { timeout: 2000 });
+  const nextLi = await page.$('li[title="Next Page"]');
   if (!nextLi) return true; // If the button doesn't exist, assume last page
 
   const className = await page.evaluate(el => el.getAttribute('class'), nextLi);
@@ -186,38 +186,45 @@ const checkStock = async ($, allProductsMap, changedProducts) => {
     let product = allProductsMap[name];
 
     // Keep track of database changes that need to be made based on scraped data
-    if (!product) {
-      // Adding new product to table
-      product = new Product({
-        name,
-        price,
-        in_stock: inStock,
-        url: productUrl,
-      });
-
-      alertProducts.push([product, ChangeTypeAlert.NEW_ITEM])
-      changedProducts.push(product);
-      console.log("Added new product:", name);
-    } else {
-      // Restock detected, update stock status and keep track of restocked item
-      if (!product.in_stock && inStock) {
-        alertProducts.push([product, ChangeTypeAlert.RESTOCK]);
-        product.in_stock = inStock;
-      }
-
-      const updateField = (field, newValue) => {
-        if (product[field] !== newValue) {
-          product[field] = newValue;
-          console.log(`Updated ${field} for ${product.name}`);
+    try {
+      if (!product) {
+        // Adding new product to table
+        product = new Product({
+          name,
+          price,
+          in_stock: inStock,
+          url: productUrl,
+        });
+  
+        alertProducts.push([product, ChangeTypeAlert.NEW_ITEM])
+        if (!changedProducts.includes(product)) {
+          changedProducts.push(product);
         }
-      };
-
-      // Handle other product detail changes
-      updateField("price", price);
-      updateField("url", productUrl);
-      // updateField("img_url", imgUrl);
-
-      changedProducts.push(product);
+        console.log("Added new product:", name);
+      } else {
+        // Restock detected, update stock status and keep track of restocked item
+        if (!product.in_stock && inStock) {
+          alertProducts.push([product, ChangeTypeAlert.RESTOCK]);
+          updateField("in_stock", inStock);
+        }
+  
+        const updateField = (field, newValue) => {
+          if (product[field] !== newValue) {
+            product[field] = newValue;
+            // console.log(`Updated ${field} for ${product.name}`);
+  
+            if (!changedProducts.includes(product)) {
+              changedProducts.push(product);
+            }
+          }
+        };
+  
+        // Handle other product detail changes
+        updateField("price", price);
+        updateField("url", productUrl);
+      }
+    } catch (err) {
+      console.error(`❌ Error processing ${name}: ${err.message}`);
     }
   }
 };
